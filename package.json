@@ -12,9 +12,7 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "dotenv": "^17.2.3",
-    "electron": "^38.3.0",
-    "sqlite3": "^5.1.7"
+    "electron": "^38.3.0"
   },
   "devDependencies": {
     "electron-rebuild": "^3.2.9"
