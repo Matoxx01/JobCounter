@@ -165,12 +165,27 @@ h1, h2, h3, h4, h5, h6, p, span, a, li, label, textarea, .lyrics, pre, .btnGray,
 #registerList::-webkit-scrollbar { width: 10px; }
 #registerList::-webkit-scrollbar-track { background: transparent; }
 #registerList::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.405); border-radius: 8px; }
+/* Assets list should match registerList */
+#assetsList {
+    max-height: 210px;
+    overflow-y: auto;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+#assetsList::-webkit-scrollbar { width: 10px; }
+#assetsList::-webkit-scrollbar-track { background: transparent; }
+#assetsList::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.405); border-radius: 8px; }
 .register-left {
     text-align: left;
     font-size: 14px;
     color: #ffffff;
     flex: 1 1 auto;
+    display: flex;
+    align-items: center;
 }
+
+.register-thumb { width: 56px; height: 40px; object-fit: cover; margin-right: 8px; border-radius: 6px; }
 .register-right {
     display: flex;
     align-items: center;

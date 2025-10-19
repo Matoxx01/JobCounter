@@ -1,6 +1,7 @@
 const { app, BrowserWindow } = require('electron');
 const { dialog } = require('electron');
 const { ipcMain } = require('electron');
+const { Tray, Notification } = require('electron');
 const path = require('path');
 
 // Inicialización de SQLite
@@ -9,6 +10,20 @@ const dataPath = path.join(__dirname, 'data.json');
 
 // In-memory cache of data.json
 let storage = { time_slaps: [], register: [] };
+
+// Tray instance (created when window ready)
+let tray = null;
+
+// Ensure Windows notifications and taskbar use a consistent AppID and app name
+try {
+  if (process.platform === 'win32' && app && typeof app.setAppUserModelId === 'function') {
+    // use a stable app id used for notifications
+    app.setAppUserModelId('Cartoon Job Counter');
+  }
+  if (app && app.name !== 'Cartoon Job Counter') {
+    app.name = 'Cartoon Job Counter';
+  }
+} catch (e) { /* ignore if not available */ }
 
 function loadStorage() {
   try {
@@ -53,6 +68,34 @@ function createWindow() {
 
   win.loadFile('public/index.html');
   // win.removeMenu();
+
+  // When window is minimized, hide to tray and show a notification
+  win.on('minimize', (event) => {
+    try {
+      event.preventDefault();
+      win.hide();
+      // Try native Notification first
+      try {
+        if (process.platform === 'win32' && tray && typeof tray.displayBalloon === 'function') {
+          tray.displayBalloon({ title: 'Cartoon Job Counter', content: 'App minimized to tray. Timer will continue running.' });
+        }
+      } catch(e) { /* ignore */ }
+    } catch (e) { console.warn('minimize handler failed', e); }
+  });
+  
+  // Create tray icon once (idempotent)
+  try {
+    if (!tray) {
+      const iconPath = path.join(__dirname, 'build', 'favicon.png');
+      tray = new Tray(iconPath);
+      tray.setToolTip('Cartoon Job Counter');
+      tray.on('click', () => {
+        if (win.isMinimized()) win.restore();
+        win.show();
+        win.focus();
+      });
+    }
+  } catch (e) { console.warn('Tray creation failed', e); }
 }
 
 function initDatabase() {
@@ -155,15 +198,72 @@ ipcMain.handle('dialog:confirm_delete', async (event, { text }) => {
   return { confirmed: result.response === 0 };
 });
 
+// Assets management: list, add (via dialog + copy), delete
+ipcMain.handle('assets:list', async (event, { type }) => {
+  try {
+    const folder = type === 'music' ? 'music' : 'images';
+    const dir = path.join(__dirname, 'assets', folder);
+    if (!fs.existsSync(dir)) return [];
+    const files = fs.readdirSync(dir).filter(f => {
+      if (folder === 'images') return /\.gif$/i.test(f);
+      if (folder === 'music') return /\.(mp3|wav|ogg|m4a)$/i.test(f);
+      return true;
+    });
+    return files;
+  } catch (e) {
+    console.error('assets:list failed', e);
+    return [];
+  }
+});
+
+ipcMain.handle('assets:add', async (event, { type }) => {
+  try {
+    const folder = type === 'music' ? 'music' : 'images';
+    const dir = path.join(__dirname, 'assets', folder);
+    const filters = folder === 'images' ? [{ name: 'GIF', extensions: ['gif'] }] : [{ name: 'Music', extensions: ['mp3','wav','ogg','m4a'] }];
+    const res = await dialog.showOpenDialog({ properties: ['openFile'], filters });
+    if (res.canceled || !res.filePaths || res.filePaths.length===0) return { ok: false };
+    const src = res.filePaths[0];
+    const base = path.basename(src);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    let dest = path.join(dir, base);
+    // if exists, create a unique name
+    let i = 1;
+    const ext = path.extname(base);
+    const nameOnly = path.basename(base, ext);
+    while (fs.existsSync(dest)) {
+      dest = path.join(dir, `${nameOnly}(${i})${ext}`);
+      i++;
+    }
+    fs.copyFileSync(src, dest);
+    return { ok: true, name: path.basename(dest) };
+  } catch (e) {
+    console.error('assets:add failed', e);
+    return { ok: false };
+  }
+});
+
+ipcMain.handle('assets:delete', async (event, { type, name }) => {
+  try {
+    const folder = type === 'music' ? 'music' : 'images';
+    const file = path.join(__dirname, 'assets', folder, name);
+    if (!fs.existsSync(file)) return { ok: false };
+    fs.unlinkSync(file);
+    return { ok: true };
+  } catch (e) {
+    console.error('assets:delete failed', e);
+    return { ok: false };
+  }
+});
+
 function closeDatabase() {
   saveStorage();
 }
 
-app.whenReady().then(createWindow);
-
-// Inicializar storage cuando la app esté lista
+// Initialize app: set up storage and create the window after app is ready
 app.whenReady().then(() => {
-  initDatabase();
+  try { initDatabase(); } catch(e){ console.warn('initDatabase failed', e); }
+  createWindow();
 });
 
 app.on('window-all-closed', () => {
@@ -172,6 +272,39 @@ app.on('window-all-closed', () => {
 
 app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow();
+});
+
+// IPC: restore/show the app window
+ipcMain.handle('app:show', async ()=>{
+  const wins = BrowserWindow.getAllWindows();
+  if (wins && wins.length>0) {
+    const w = wins[0];
+    if (w.isMinimized()) w.restore();
+    w.show();
+    w.focus();
+  }
+  return { ok: true };
+});
+
+// IPC: alarm triggered in renderer - show notification and restore window
+ipcMain.handle('alarm:trigger', async ()=>{
+  const wins = BrowserWindow.getAllWindows();
+  if (wins && wins.length>0) {
+    const w = wins[0];
+    if (w.isMinimized()) w.restore();
+    w.show();
+    w.focus();
+  }
+  try {
+    if (Notification.isSupported()) {
+      const n = new Notification({ title: 'Cartoon Job Counter - Alarma', body: 'Se alcanzó la cuota.' });
+      n.show();
+      n.on('click', ()=>{
+        const wins2 = BrowserWindow.getAllWindows(); if (wins2 && wins2.length>0){ wins2[0].show(); wins2[0].focus(); }
+      });
+    }
+  } catch(e) { console.warn('alarm notify failed', e); }
+  return { ok: true };
 });
 
 // Cerrar la DB antes de salir

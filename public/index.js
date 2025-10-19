@@ -20,6 +20,23 @@
         '../assets/images/steven2.gif'
     ];
 
+    // Load assets from main process and populate musicList and gifs arrays
+    async function loadAssets(){
+        try {
+            if (!window.ipcRenderer) return;
+            const musicFiles = await window.ipcRenderer.invoke('assets:list', { type: 'music' }) || [];
+            // replace musicList contents
+            musicList.length = 0;
+            musicFiles.forEach(f => musicList.push('../assets/music/' + f));
+
+            const imageFiles = await window.ipcRenderer.invoke('assets:list', { type: 'images' }) || [];
+            gifs.length = 0;
+            imageFiles.forEach(f => gifs.push('../assets/images/' + f));
+        } catch (e) {
+            console.warn('loadAssets failed', e);
+        }
+    }
+
     // Utility: pick random item
     function pickRandom(arr) {
         return arr[Math.floor(Math.random() * arr.length)];
@@ -360,7 +377,7 @@
         })();
 
         if (push) {
-            history.pushState({ page: 'register' }, 'Register', 'register.html');
+            history.pushState({ page: 'register' }, 'Register', '#register');
         }
     }
 
@@ -406,8 +423,6 @@
                         </div>
                     </div>
                 </div>
-                <br />
-                <br />
                 <div class="btns">
                     <button id="back" class="btnRed">Back</button>
                     <button id="save" class="btnGreen">Save</button>
@@ -419,6 +434,30 @@
         // attach handlers for config view buttons
         attachConfigHandlers();
 
+                // Add two buttons below Time lapse to manage assets
+                (function attachAssetButtons(){
+                    const wrapper = document.createElement('div');
+                    wrapper.style.marginTop = '10px';
+                    wrapper.style.display = 'flex';
+                    wrapper.style.flexDirection = 'column';
+                    wrapper.style.gap = '8px';
+
+                    const addGifs = document.createElement('button');
+                    addGifs.className = 'btnGray';
+                    addGifs.textContent = 'Add GIFs';
+                    addGifs.addEventListener('click', (ev)=>{ ev.preventDefault(); try{ window.playSound && window.playSound('select'); }catch{}; showAssetsView('images'); });
+
+                    const addMusic = document.createElement('button');
+                    addMusic.className = 'btnGray';
+                    addMusic.textContent = 'Add music';
+                    addMusic.addEventListener('click', (ev)=>{ ev.preventDefault(); try{ window.playSound && window.playSound('select'); }catch{}; showAssetsView('music'); });
+
+                    const container = document.querySelector('.config-panel > div');
+                    if (container) container.appendChild(wrapper);
+                    wrapper.appendChild(addGifs);
+                    wrapper.appendChild(addMusic);
+                })();
+
         // load stored timelapse value if present
         try {
             const stored = localStorage.getItem('timeLapse');
@@ -427,8 +466,79 @@
         } catch (e) {}
 
         if (push) {
-            history.pushState({ page: 'config' }, 'Settings', 'config.html');
+            history.pushState({ page: 'config' }, 'Settings', '#config');
         }
+    }
+
+    // Show assets listing and allow add/delete
+    function showAssetsView(type, push = true) {
+        const header = document.querySelector('h1');
+        const container = document.getElementById('container');
+        if (!container || !header) return;
+        if (origHeaderText === null) origHeaderText = header.textContent;
+        if (origContainerHTML === null) origContainerHTML = container.innerHTML;
+        header.textContent = type === 'music' ? 'Add music' : 'Add GIFs';
+        document.title = header.textContent;
+
+        container.innerHTML = `
+            <div class="register-panel">
+                <div id="assetsList"></div>
+                <div class="btns">
+                    <button id="assets-back" class="btnRed">Back</button>
+                    <button id="assets-add" class="btnGreen">Add</button>
+                </div>
+            </div>
+        `;
+
+        const list = document.getElementById('assetsList');
+        const addBtn = document.getElementById('assets-add');
+        const backBtn = document.getElementById('assets-back');
+
+        async function load(){
+            try {
+                const rows = await window.ipcRenderer.invoke('assets:list', { type });
+                list.innerHTML = '';
+                rows.forEach(name => {
+                const row = document.createElement('div');
+                row.className = 'register-row';
+                const left = document.createElement('div'); left.className = 'register-left';
+                if (type === 'images') {
+                    const thumb = document.createElement('img');
+                    thumb.className = 'register-thumb';
+                    thumb.src = encodeURI('../assets/images/' + name);
+                    thumb.alt = name;
+                    left.appendChild(thumb);
+                    const span = document.createElement('span'); span.textContent = name; left.appendChild(span);
+                } else {
+                    left.textContent = name;
+                }
+                    const right = document.createElement('div'); right.className = 'register-right';
+                    const del = document.createElement('div'); del.className = 'register-trash';
+                    const img = document.createElement('img'); img.src = encodeURI('../assets/icons/trash.svg'); del.appendChild(img);
+                    del.addEventListener('click', async ()=>{
+                        const dlg = await window.ipcRenderer.invoke('dialog:confirm_delete', { text: `¿Eliminar ${name}?` });
+                        if (!dlg || !dlg.confirmed) { try{ window.playSound && window.playSound('select'); }catch{}; return; }
+                        try{ window.playSound && window.playSound('delete'); }catch{};
+                        const res = await window.ipcRenderer.invoke('assets:delete', { type, name });
+                        if (res && res.ok) { row.remove(); try{ await loadAssets(); }catch{} } else alert('No se pudo eliminar');
+                    });
+                    right.appendChild(del);
+                    row.appendChild(left); row.appendChild(right); list.appendChild(row);
+                });
+            } catch(e){ console.error('load assets failed', e); }
+        }
+
+        addBtn.addEventListener('click', async ()=>{
+            try{ try{ window.playSound && window.playSound('select'); }catch{};
+                const res = await window.ipcRenderer.invoke('assets:add', { type });
+                if (res && res.ok) { await load(); try{ await loadAssets(); }catch{} }
+            } catch(e){ console.error('assets:add failed', e); }
+        });
+
+        backBtn.addEventListener('click', ()=>{ try{ window.playSound && window.playSound('select'); }catch{}; history.back(); });
+
+        load();
+        if (push) history.pushState({ page: `assets-${type}` }, header.textContent, `#assets-${type}`);
     }
 
     function showMainView() {
@@ -505,8 +615,8 @@
 
     // Initialize on DOMContentLoaded
     document.addEventListener('DOMContentLoaded', () => {
-        createBackgroundGif();
-        playOneRandomMusicOnce();
+    // load assets from disk then create background GIF and play random music
+    (async ()=>{ await loadAssets(); createBackgroundGif(); playOneRandomMusicOnce(); })();
 
         // Save original page state and attach handlers
         const header = document.querySelector('h1');
@@ -593,14 +703,13 @@
         })();
 
         // If the page was loaded with config.html in URL (direct open), show config view
-        if (location.pathname.endsWith('config.html') || location.href.endsWith('config.html')) {
-            // replace state so popstate works consistently
-            history.replaceState({ page: 'config' }, 'Settings', 'config.html');
-            // render but don't push again
+        // Support hash-based direct entry: if URL contains #config or #register show the respective view
+        if (location.hash === '#config') {
+            history.replaceState({ page: 'config' }, 'Settings', '#config');
             showConfigView(false);
         }
-        if (location.pathname.endsWith('register.html') || location.href.endsWith('register.html')) {
-            history.replaceState({ page: 'register' }, 'Register', 'register.html');
+        if (location.hash === '#register') {
+            history.replaceState({ page: 'register' }, 'Register', '#register');
             showRegisterView(false);
         }
     });
@@ -664,6 +773,8 @@
             // when crossing zero (0 -> -1) play alert sounds sequentially and mark red
                 if (timerRemaining === -1) {
                     // Play the 'alert' sound N times in sequence (no overlap)
+                    // Notify main process once when alarm sequence starts so app can restore/notify
+                    try { if (window.ipcRenderer && !window.__alarmTriggered) { window.__alarmTriggered = true; window.ipcRenderer.invoke('alarm:trigger').catch(()=>{}); } } catch(e){}
                     (async function playAlertsSequentially(count){
                         try {
                             for (let i=0;i<count;i++){
