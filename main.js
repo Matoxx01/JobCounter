@@ -67,7 +67,7 @@ function createWindow() {
   });
 
   win.loadFile('public/index.html');
-  // win.removeMenu();
+  win.removeMenu();
 
   // When window is minimized, hide to tray and show a notification
   win.on('minimize', (event) => {
@@ -82,7 +82,7 @@ function createWindow() {
       } catch(e) { /* ignore */ }
     } catch (e) { console.warn('minimize handler failed', e); }
   });
-  
+
   // Create tray icon once (idempotent)
   try {
     if (!tray) {
