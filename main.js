@@ -58,6 +58,8 @@ function createWindow() {
     height: 500,
     minWidth: 500,
     minHeight: 500,
+    maxWidth: 500,
+    maxHeight: 500,
     icon: path.join(__dirname, 'build', 'favicon.png'),
     preload: path.join(__dirname, 'preload.js'),
     webPreferences: {
