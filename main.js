@@ -25,6 +25,15 @@ try {
   }
 } catch (e) { /* ignore if not available */ }
 
+// Ensure Chromium uses a cache directory inside the app userData where we should have write permissions.
+try {
+  const userCache = path.join(app.getPath('userData'), 'Cache');
+  // Set before app is ready so chromium respects it
+  app.commandLine.appendSwitch('disk-cache-dir', userCache);
+  // Also ensure the directory exists
+  try { if (!fs.existsSync(userCache)) fs.mkdirSync(userCache, { recursive: true }); } catch (e) { /* ignore */ }
+} catch (e) { console.warn('Failed to set disk-cache-dir', e); }
+
 function loadStorage() {
   try {
     if (fs.existsSync(dataPath)) {
@@ -363,8 +372,9 @@ ipcMain.handle('storage:has_snapshot_this_week', async ()=>{
 // Set the configured starting time for the current week (time_start = 'HH:MM:SS')
 ipcMain.handle('storage:set_start', async (event, { time_start }) => {
   const savedAt = new Date().toISOString();
-  const existing = storage.time_slaps.length>0 ? storage.time_slaps[0] : null;
-  const row = { time_start: time_start||null, time_stamp: existing ? existing.time_stamp : null, saved_at: savedAt };
+  // When a new time_start is configured, clear any existing time_stamp so the
+  // configured start becomes the authoritative value immediately.
+  const row = { time_start: time_start||null, time_stamp: null, saved_at: savedAt };
   if (storage.time_slaps.length>0) storage.time_slaps[0] = row; else storage.time_slaps.push(row);
   saveStorage();
   return { ok: true };
@@ -383,6 +393,21 @@ ipcMain.handle('storage:set_time_slap', async (event, { time_stamp }) => {
 // Get all snapshots
 ipcMain.handle('storage:get_all', async ()=>{
   return storage.time_slaps.slice();
+});
+
+// Replace entire in-memory JSON storage with provided object and persist to disk
+ipcMain.handle('storage:replace_with_default', async (event, { obj }) => {
+  try {
+    if (!obj || typeof obj !== 'object') return { ok: false, error: 'invalid' };
+    // Ensure expected keys
+    storage.time_slaps = Array.isArray(obj.time_slaps) ? obj.time_slaps : [];
+    storage.register = Array.isArray(obj.register) ? obj.register : [];
+    saveStorage();
+    return { ok: true };
+  } catch (e) {
+    console.error('storage:replace_with_default failed', e);
+    return { ok: false, error: String(e) };
+  }
 });
 
 // Save the configured starting time for the current week (time_start = 'HH:MM:SS')

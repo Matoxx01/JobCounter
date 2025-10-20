@@ -176,6 +176,17 @@ h1, h2, h3, h4, h5, h6, p, span, a, li, label, textarea, .lyrics, pre, .btnGray,
 #assetsList::-webkit-scrollbar { width: 10px; }
 #assetsList::-webkit-scrollbar-track { background: transparent; }
 #assetsList::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.405); border-radius: 8px; }
+
+/* Re-usable class for register-like scroll areas (used by Settings buttons wrapper) */
+.register-scroll {
+    max-height: 210px;
+    overflow-y: auto;
+    width: 100%;
+    box-sizing: border-box;
+}
+.register-scroll::-webkit-scrollbar { width: 10px; }
+.register-scroll::-webkit-scrollbar-track { background: transparent; }
+.register-scroll::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.405); border-radius: 8px; }
 .register-left {
     text-align: left;
     font-size: 14px;

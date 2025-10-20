@@ -37,6 +37,201 @@
         }
     }
 
+    // ----------------------
+    // Storage abstraction
+    // ----------------------
+    // Prefer using a localStorage-backed DB when present (seeded by preload from data.json)
+    const BUNDLED_DB_KEY = (window.appBoot && window.appBoot.bundledDbKey) ? window.appBoot.bundledDbKey : 'cartoonjobcounter_db';
+
+    function readBundledDb() {
+        try {
+            const raw = localStorage.getItem(BUNDLED_DB_KEY);
+            if (!raw) return null;
+            return JSON.parse(raw);
+        } catch (e) { return null; }
+    }
+
+    function writeBundledDb(obj) {
+        try {
+            localStorage.setItem(BUNDLED_DB_KEY, JSON.stringify(obj));
+            return true;
+        } catch (e) { return false; }
+    }
+
+    // Storage helpers used by the app. They will use localStorage DB if present, otherwise fall back to ipcRenderer.
+    const Storage = {
+        async getLast() {
+            try {
+                const db = readBundledDb();
+                if (db && db.time_slaps && db.time_slaps.length>0) {
+                    const row = db.time_slaps[0];
+                    return { time_start: row.time_start||null, time_stamp: row.time_stamp||null, saved_at: row.saved_at||null };
+                }
+            } catch(e){}
+            if (window.ipcRenderer) return window.ipcRenderer.invoke('storage:get_last').catch(()=>null);
+            return null;
+        },
+        async setTimeSlap(time_stamp) {
+            try {
+                const db = readBundledDb();
+                if (db) {
+                    const prevStart = (db.time_slaps && db.time_slaps.length>0) ? db.time_slaps[0].time_start : null;
+                    const savedAt = new Date().toISOString();
+                    const row = { time_start: prevStart || null, time_stamp: time_stamp||null, saved_at: savedAt };
+                    db.time_slaps = db.time_slaps || [];
+                    db.time_slaps[0] = row;
+                    writeBundledDb(db);
+                    return { ok: true };
+                }
+            } catch(e){}
+            if (window.ipcRenderer) return window.ipcRenderer.invoke('storage:set_time_slap', { time_stamp }).catch(()=>({ ok: false }));
+            return { ok: false };
+        },
+        async setStart(time_start) {
+            try {
+                const db = readBundledDb();
+                if (db) {
+                    const savedAt = new Date().toISOString();
+                    // When setting a new configured start, clear any existing time_stamp
+                    // so the configured start becomes authoritative immediately.
+                    const row = { time_start: time_start||null, time_stamp: null, saved_at: savedAt };
+                    db.time_slaps = db.time_slaps || [];
+                    db.time_slaps[0] = row;
+                    writeBundledDb(db);
+                    return { ok: true };
+                }
+            } catch(e){}
+            if (window.ipcRenderer) return window.ipcRenderer.invoke('storage:set_start', { time_start }).catch(()=>({ ok: false }));
+            return { ok: false };
+        },
+        async getRegister() {
+            try {
+                const db = readBundledDb();
+                if (db && db.register) return db.register.slice();
+            } catch(e){}
+            if (window.ipcRenderer) return window.ipcRenderer.invoke('storage:get_register').catch(()=>[]);
+            return [];
+        },
+        async deleteRegister(id) {
+            try {
+                const db = readBundledDb();
+                if (db && db.register) {
+                    const idx = db.register.findIndex(r=>r.id===id);
+                    if (idx===-1) return { ok: false };
+                    db.register.splice(idx,1);
+                    writeBundledDb(db);
+                    return { ok: true };
+                }
+            } catch(e){}
+            if (window.ipcRenderer) return window.ipcRenderer.invoke('storage:delete_register', { id }).catch(()=>({ ok: false }));
+            return { ok: false };
+        },
+        async listAllSnapshots() {
+            try {
+                const db = readBundledDb();
+                if (db && db.time_slaps) return db.time_slaps.slice();
+            } catch(e){}
+            if (window.ipcRenderer) return window.ipcRenderer.invoke('storage:get_all').catch(()=>[]);
+            return [];
+        },
+        async addSnapshotSimple(time_stamp) {
+            try {
+                const db = readBundledDb();
+                if (db) {
+                    const savedAt = new Date().toISOString();
+                    const row = { time_start: null, time_stamp: time_stamp||null, saved_at: savedAt };
+                    db.time_slaps = db.time_slaps || [];
+                    db.time_slaps.push(row);
+                    writeBundledDb(db);
+                    return { ok: true };
+                }
+            } catch(e){}
+            if (window.ipcRenderer) return window.ipcRenderer.invoke('storage:add_snapshot_simple', { time_stamp }).catch(()=>({ ok: false }));
+            return { ok: false };
+        },
+        async addSnapshot(time_start, time_stamp) {
+            try {
+                const db = readBundledDb();
+                if (db) {
+                    const savedAt = new Date().toISOString();
+                    const row = { time_start: time_start||null, time_stamp: time_stamp||null, saved_at: savedAt };
+                    db.time_slaps = db.time_slaps || [];
+                    db.time_slaps.push(row);
+                    writeBundledDb(db);
+                    return { ok: true };
+                }
+            } catch(e){}
+            if (window.ipcRenderer) return window.ipcRenderer.invoke('storage:add_snapshot', { time_start, time_stamp }).catch(()=>({ ok: false }));
+            return { ok: false };
+        },
+        async processWeekly() {
+            try {
+                const db = readBundledDb();
+                if (db && db.time_slaps && db.time_slaps.length>0) {
+                    const snap = db.time_slaps[0];
+                    if (!snap || !snap.saved_at) return [];
+                    const snapDate = new Date(snap.saved_at);
+                    function mondayOf(date){ const day = date.getDay(); const daysSinceMon = (day+6)%7; const m=new Date(date); m.setDate(date.getDate()-daysSinceMon); m.setHours(0,0,0,0); return m; }
+                    const startMon = mondayOf(snapDate);
+                    const nowMon = mondayOf(new Date());
+                    const created = [];
+                    // existing weeks set
+                    const existingWeeks = new Set((db.register||[]).map(r=>r.week));
+                    // next id
+                    let nextRegId = 1;
+                    if (db.register && db.register.length>0) {
+                        const maxId = Math.max(...db.register.map(r=>r.id||0));
+                        nextRegId = maxId + 1;
+                    }
+                    // only create a register entry if snapshot's Monday is before this week's Monday
+                    if (startMon.getTime() < nowMon.getTime()) {
+                        const weekISO = (function(d){ const y=d.getFullYear(); const m=String(d.getMonth()+1).padStart(2,'0'); const day=String(d.getDate()).padStart(2,'0'); return `${y}-${m}-${day}`; })(startMon);
+                        if (!existingWeeks.has(weekISO)) {
+                            // determine seconds from time_stamp or time_start
+                            function parseSignedHHMMSSToSeconds(str){ if (!str) return null; const sign = str.trim().startsWith('-')?-1:1; const s=str.trim().replace(/^[-+]/,''); const parts=s.split(':').map(x=>parseInt(x,10)||0); if (parts.length===3) return sign*(parts[0]*3600+parts[1]*60+parts[2]); if (parts.length===2) return sign*(parts[0]*60+parts[1]); return sign*(parts[0]||0); }
+                            function formatHourFromSeconds(sec){ if (sec===null || sec===undefined) return '+00:00'; const sign = sec<0?'-':'+'; const abs = Math.abs(Math.floor(sec)); const hh = String(Math.floor(abs/3600)).padStart(2,'0'); const mm = String(Math.floor((abs%3600)/60)).padStart(2,'0'); return `${sign}${hh}:${mm}`; }
+                            let sec = null;
+                            if (snap.time_stamp) sec = parseSignedHHMMSSToSeconds(snap.time_stamp);
+                            if (sec===null && snap.time_start) sec = parseSignedHHMMSSToSeconds(snap.time_start);
+                            const hourStr = formatHourFromSeconds(sec);
+                            db.register = db.register || [];
+                            const regRow = { id: nextRegId++, week: weekISO, hour: hourStr };
+                            db.register.push(regRow);
+                            created.push(regRow);
+                        }
+                    }
+                    if (created.length>0) {
+                        // clear time_stamp and update saved_at
+                        if (db.time_slaps && db.time_slaps.length>0) {
+                            db.time_slaps[0].time_stamp = null;
+                            db.time_slaps[0].saved_at = new Date().toISOString();
+                        }
+                        writeBundledDb(db);
+                    }
+                    return created;
+                }
+            } catch(e){}
+            if (window.ipcRenderer) return window.ipcRenderer.invoke('storage:process_weekly').catch(()=>[]);
+            return [];
+        },
+        async hasSnapshotThisWeek() {
+            try {
+                const db = readBundledDb();
+                if (db && db.time_slaps && db.time_slaps.length>0) {
+                    const row = db.time_slaps[0];
+                    if (!row || !row.saved_at || !row.time_stamp) return { has: false };
+                    const saved = new Date(row.saved_at);
+                    const now = new Date();
+                    function mondayOf(date){ const day = date.getDay(); const daysSinceMon = (day+6)%7; const m=new Date(date); m.setDate(date.getDate()-daysSinceMon); m.setHours(0,0,0,0); return m; }
+                    return { has: mondayOf(saved).getTime() === mondayOf(now).getTime() };
+                }
+            } catch(e){}
+            if (window.ipcRenderer) return window.ipcRenderer.invoke('storage:has_snapshot_this_week').catch(()=>({ has: false }));
+            return { has: false };
+        }
+    };
+
+
     // Utility: pick random item
     function pickRandom(arr) {
         return arr[Math.floor(Math.random() * arr.length)];
@@ -200,7 +395,7 @@
         }
 
         if (saveBtn) {
-            saveBtn.addEventListener('click', (ev) => {
+            saveBtn.addEventListener('click', async (ev) => {
                 ev.preventDefault();
                 try { window.playSound('select'); } catch (e) { console.error('Failed to play select sound', e); }
                 try {
@@ -214,7 +409,17 @@
                         else if (parts.length===2) { hh = 0; mm = parts[0]; ss = parts[1]; }
                         else { mm = parts[0]||0; }
                         const asHHMMSS = `${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')}:${String(ss).padStart(2,'0')}`;
-                        if (window.ipcRenderer) window.ipcRenderer.invoke('storage:set_start', { time_start: asHHMMSS }).catch(()=>{});
+                        try {
+                            // Ensure the configured start is persisted before leaving the settings
+                            try {
+                                const res = await Storage.setStart(asHHMMSS).catch(()=>({ ok: false }));
+                                if (!res || !res.ok) {
+                                    console.warn('Storage.setStart failed', res);
+                                    alert('No se pudo guardar el tiempo configurado. Intente de nuevo.');
+                                    return;
+                                }
+                            } catch (e) { console.warn('Storage.setStart threw', e); }
+                        } catch(e){}
                     } catch(e){}
                 } catch (e) { console.warn('Failed to save timeLapse', e); }
                 // return to previous page
@@ -327,8 +532,10 @@
         // populate register list from storage
         (async function loadRegister(){
             try {
-                if (!window.ipcRenderer) return;
-                const rows = await window.ipcRenderer.invoke('storage:get_register');
+                // Ensure weekly processing runs for localStorage-backed DB so register entries
+                // are created when appropriate (mirrors main.processWeekly behavior).
+                try { await Storage.processWeekly(); } catch(e) { /* ignore */ }
+                const rows = await Storage.getRegister();
                 const list = document.getElementById('registerList');
                 if (!list) return;
                 list.innerHTML = '';
@@ -344,7 +551,7 @@
                     } catch(e){ return weekISO; }
                 }
 
-                rows.forEach(r => {
+                (rows||[]).forEach(r => {
                     const rowEl = document.createElement('div');
                     rowEl.className = 'register-row';
 
@@ -370,13 +577,13 @@
                     trash.addEventListener('click', async (ev)=>{
                         ev.preventDefault();
                         try {
-                            const dlg = await window.ipcRenderer.invoke('dialog:confirm_delete', { text: '¿Está seguro de eliminar el registro?' });
+                            const dlg = await (window.ipcRenderer ? window.ipcRenderer.invoke('dialog:confirm_delete', { text: '¿Está seguro de eliminar el registro?' }) : { confirmed: true });
                             if (!dlg || !dlg.confirmed) {
                                 try { if (window.playSound) window.playSound('select'); } catch(e){}
                                 return;
                             }
                             try { if (window.playSound) window.playSound('delete'); } catch(e){}
-                            const res = await window.ipcRenderer.invoke('storage:delete_register', { id: r.id });
+                            const res = await Storage.deleteRegister(r.id);
                             if (res && res.ok) {
                                 // remove from DOM
                                 rowEl.remove();
@@ -455,29 +662,90 @@
         // attach handlers for config view buttons
         attachConfigHandlers();
 
-                // Add two buttons below Time lapse to manage assets
-                (function attachAssetButtons(){
-                    const wrapper = document.createElement('div');
-                    wrapper.style.marginTop = '10px';
-                    wrapper.style.display = 'flex';
-                    wrapper.style.flexDirection = 'column';
-                    wrapper.style.gap = '8px';
+        // Add the original two buttons below Time lapse to manage assets (keeps previous behavior)
+        (function attachAssetButtons(){
+            const container = document.querySelector('.config-panel > div');
+            if (!container) return;
+            const wrapper = document.createElement('div');
+            // give it a class so it uses the same scrollbar styles as the register list
+            wrapper.className = 'register-scroll';
+            wrapper.style.marginTop = '10px';
+            wrapper.style.display = 'flex';
+            wrapper.style.flexDirection = 'column';
+            wrapper.style.gap = '8px';
+            // make it scrollable like register but show exactly two buttons by default
+            try {
+                // create a temporary sample button to measure rendered height (including margins)
+                const sample = document.createElement('button');
+                sample.className = 'btnGray';
+                sample.style.visibility = 'hidden';
+                sample.style.position = 'absolute';
+                sample.textContent = 'sample';
+                wrapper.appendChild(sample);
+                const cs = window.getComputedStyle(sample);
+                const height = sample.offsetHeight || parseFloat(cs.height) || 40;
+                const marginTop = parseFloat(cs.marginTop) || 0;
+                const marginBottom = parseFloat(cs.marginBottom) || 0;
+                const totalPerButton = Math.ceil(height + marginTop + marginBottom);
+                // show two buttons worth of height
+                wrapper.style.maxHeight = '130px';
+                wrapper.style.overflowY = 'auto';
+                // remove sample
+                wrapper.removeChild(sample);
+            } catch (e) {
+                // fallback: approximately two buttons
+                wrapper.style.maxHeight = '110px';
+                wrapper.style.overflowY = 'auto';
+            }
 
-                    const addGifs = document.createElement('button');
-                    addGifs.className = 'btnGray';
-                    addGifs.textContent = 'Add GIFs';
-                    addGifs.addEventListener('click', (ev)=>{ ev.preventDefault(); try{ window.playSound && window.playSound('select'); }catch{}; showAssetsView('images'); });
+            const addGifs = document.createElement('button');
+            addGifs.className = 'btnGray';
+            addGifs.textContent = 'Add GIFs';
+            addGifs.addEventListener('click', (ev)=>{ ev.preventDefault(); try{ window.playSound && window.playSound('select'); }catch{}; showAssetsView('images'); });
 
-                    const addMusic = document.createElement('button');
-                    addMusic.className = 'btnGray';
-                    addMusic.textContent = 'Add music';
-                    addMusic.addEventListener('click', (ev)=>{ ev.preventDefault(); try{ window.playSound && window.playSound('select'); }catch{}; showAssetsView('music'); });
+            const addMusic = document.createElement('button');
+            addMusic.className = 'btnGray';
+            addMusic.textContent = 'Add music';
+            addMusic.addEventListener('click', (ev)=>{ ev.preventDefault(); try{ window.playSound && window.playSound('select'); }catch{}; showAssetsView('music'); });
 
-                    const container = document.querySelector('.config-panel > div');
-                    if (container) container.appendChild(wrapper);
-                    wrapper.appendChild(addGifs);
-                    wrapper.appendChild(addMusic);
-                })();
+            const resetBtn = document.createElement('button');
+            resetBtn.className = 'btnGray';
+            resetBtn.textContent = 'Reset to default settings';
+            resetBtn.addEventListener('click', async (ev)=>{
+                ev.preventDefault();
+                try {
+                    const ok = confirm('Restablecer configuración por defecto? Esto sobrescribirá los cambios actuales.');
+                    if (!ok) return;
+                    const defaultObj = { time_slaps: [ { time_start: '10:00:00', time_stamp: null, saved_at: null } ], register: [] };
+                    try {
+                        // update renderer localStorage-backed DB
+                        try { writeBundledDb(defaultObj); } catch(e) { console.warn('writeBundledDb failed', e); }
+                        // also ask main process to replace its in-memory storage and persist to disk
+                        if (window.ipcRenderer) {
+                            try {
+                                // suppress beforeunload saving so this reset is not immediately overwritten
+                                window.__suppressBeforeUnload = true;
+                                const res = await window.ipcRenderer.invoke('storage:replace_with_default', { obj: defaultObj });
+                                if (!res || !res.ok) {
+                                    console.warn('IPC replace default returned failure', res);
+                                    window.__suppressBeforeUnload = false;
+                                    alert('No se pudo restablecer la configuración en el proceso principal.');
+                                    return;
+                                }
+                            } catch (e) { console.warn('IPC replace default failed', e); }
+                        }
+                        try { localStorage.setItem('timeLapse', '10:00:00'); } catch(e) {}
+                        // reload to pick up changes from both renderer and main
+                        location.reload();
+                    } catch(e){ console.warn('failed during reset', e); }
+                } catch(e){ console.error('reset failed', e); alert('No se pudo restablecer'); }
+            });
+
+            wrapper.appendChild(addGifs);
+            wrapper.appendChild(addMusic);
+            wrapper.appendChild(resetBtn);
+            container.appendChild(wrapper);
+        })();
 
         // load stored timelapse value if present
         try {
@@ -583,10 +851,9 @@
         try { updateCounterDisplay(); } catch (e) {}
 
         // Refresh current timer state from storage each time main view is shown
-        (async function refreshFromStorage(){
+    (async function refreshFromStorage(){
             try {
-                if (!window.ipcRenderer) return;
-                const last = await window.ipcRenderer.invoke('storage:get_last');
+        const last = await Storage.getLast();
                 function parseSignedHHMMSS(str) {
                     if (!str) return null;
                     const sign = str.trim().startsWith('-') ? -1 : 1;
@@ -672,7 +939,7 @@
 
                 // ask main for last saved time_slap row
                 let last = null;
-                if (window.ipcRenderer) last = await window.ipcRenderer.invoke('storage:get_last');
+                last = await Storage.getLast();
 
                 // helper: parse HH:MM or HH:MM:SS or signed string to seconds
                 function parseSignedHHMMSS(str) {
@@ -768,13 +1035,11 @@
         // Prefer the stored time_slap (time_stamp if present, else time_start), fallback to localStorage
         let initialSeconds = null;
         try {
-            if (window.ipcRenderer) {
-                const last = await window.ipcRenderer.invoke('storage:get_last');
-                function parseSignedHHMMSS(str) { if (!str) return null; const sign = str.trim().startsWith('-')?-1:1; const s=str.trim().replace(/^[-+]/,''); const parts=s.split(':').map(x=>parseInt(x,10)||0); if (parts.length===3) return sign*(parts[0]*3600+parts[1]*60+parts[2]); if (parts.length===2) return sign*(parts[0]*60+parts[1]); return sign*(parts[0]||0); }
-                if (last) {
-                    if (last.time_stamp) initialSeconds = parseSignedHHMMSS(last.time_stamp);
-                    else if (last.time_start) initialSeconds = parseSignedHHMMSS(last.time_start);
-                }
+            const last = await Storage.getLast();
+            function parseSignedHHMMSS(str) { if (!str) return null; const sign = str.trim().startsWith('-')?-1:1; const s=str.trim().replace(/^[-+]/,''); const parts=s.split(':').map(x=>parseInt(x,10)||0); if (parts.length===3) return sign*(parts[0]*3600+parts[1]*60+parts[2]); if (parts.length===2) return sign*(parts[0]*60+parts[1]); return sign*(parts[0]||0); }
+            if (last) {
+                if (last.time_stamp) initialSeconds = parseSignedHHMMSS(last.time_stamp);
+                else if (last.time_start) initialSeconds = parseSignedHHMMSS(last.time_start);
             }
         } catch(e) { console.warn('startTimerFromConfig storage read failed', e); }
 
@@ -842,10 +1107,8 @@
         // save current remaining as signed HH:MM:SS string
         (async ()=>{
             try {
-                if (window.ipcRenderer) {
-                    const stamp = formatSeconds(timerRemaining || 0);
-                    await window.ipcRenderer.invoke('storage:set_time_slap', { time_stamp: stamp });
-                }
+                const stamp = formatSeconds(timerRemaining || 0);
+                await Storage.setTimeSlap(stamp);
             } catch(e){}
         })();
     }
@@ -874,10 +1137,10 @@
     // Save timer state when window is closed or refreshed
     window.addEventListener('beforeunload', ()=>{
         try {
-            if (window.ipcRenderer) {
+                // If a reset is in progress, skip persisting so the reset isn't overwritten
+                if (window.__suppressBeforeUnload) return;
                 const stamp = formatSeconds(timerRemaining || 0);
-                window.ipcRenderer.invoke('storage:set_time_slap', { time_stamp: stamp }).catch(()=>{});
-            }
+                Storage.setTimeSlap(stamp).catch(()=>{});
         } catch(e){}
     });
 
