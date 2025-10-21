@@ -157,6 +157,27 @@
         }
     }
 
+    // Keep Start/Stop visibility in sync and persisted across view switches
+    function updateStartStopVisibility() {
+        try {
+            const startBtn = document.getElementById('start');
+            const stopBtn = document.getElementById('stop');
+            if (timerRunning) {
+                if (startBtn) startBtn.style.display = 'none';
+                if (stopBtn) stopBtn.style.display = '';
+            } else {
+                if (startBtn) startBtn.style.display = '';
+                if (stopBtn) stopBtn.style.display = 'none';
+            }
+        } catch (e) { /* ignore */ }
+    }
+
+    function setTimerRunningState(running) {
+        timerRunning = !!running;
+        try { sessionStorage.setItem('timerRunning', timerRunning ? '1' : '0'); } catch (e) {}
+        updateStartStopVisibility();
+    }
+
     function attachConfigHandlers() {
         const backBtn = document.getElementById('back');
         const registerBtn = document.getElementById('register');
@@ -554,6 +575,9 @@
         // Reattach handlers for buttons that were restored into the DOM
         attachMainHandlers();
 
+    // Ensure Start/Stop visibility matches current timerRunning state
+    updateStartStopVisibility();
+
         // Resolve counter element (container.innerHTML was restored) and render current value
         counterEl = document.getElementById('counter');
         try { updateCounterDisplay(); } catch (e) {}
@@ -760,10 +784,10 @@
         }
 
         timerRemaining = initialSeconds;
-    // ensure we have the counter element reference
-    if (!counterEl) counterEl = document.getElementById('counter');
-    timerRunning = true;
-    updateCounterDisplay();
+        // ensure we have the counter element reference
+        if (!counterEl) counterEl = document.getElementById('counter');
+        setTimerRunningState(true);
+        updateCounterDisplay();
 
         // tick every second
         if (timerInterval) clearInterval(timerInterval);
@@ -814,7 +838,7 @@
 
     function stopTimer(){
         if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
-        timerRunning = false;
+        setTimerRunningState(false);
         // save current remaining as signed HH:MM:SS string
         (async ()=>{
             try {
@@ -837,12 +861,14 @@
         }
     }
 
-    // Hook Start and Stop buttons to timer control (augment existing handlers)
+    // On initial load, restore persisted timerRunning state (so Start/Stop visibility persists)
     document.addEventListener('DOMContentLoaded', ()=>{
-        const startBtn = document.getElementById('start');
-        const stopBtn = document.getElementById('stop');
-        if (startBtn) startBtn.addEventListener('click', ()=>{ startTimerFromConfig(); });
-        if (stopBtn) stopBtn.addEventListener('click', ()=>{ stopTimer(); });
+        try {
+            const stored = sessionStorage.getItem('timerRunning');
+            if (stored === '1') timerRunning = true; else if (stored === '0') timerRunning = false;
+        } catch (e) {}
+        // Update visibility now that DOM has elements and handlers attached
+        updateStartStopVisibility();
     });
 
     // Save timer state when window is closed or refreshed
