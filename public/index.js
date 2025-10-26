@@ -843,6 +843,24 @@
         // Reattach handlers for buttons that were restored into the DOM
         attachMainHandlers();
 
+        // Subscribe to authoritative timer updates from main process
+        try {
+            if (window.ipcRenderer && window.ipcRenderer.on) {
+                window.ipcRenderer.on('timer:update_state', (payload) => {
+                    try {
+                        timerRunning = !!(payload && payload.running);
+                        mainTimerStart = payload && payload.startedAt ? payload.startedAt : null;
+                        updateStartStopVisibility();
+                        if (mainTimerStart && configuredSeconds !== null) {
+                            const elapsed = Math.floor((Date.now() - mainTimerStart)/1000);
+                            timerRemaining = configuredSeconds - elapsed;
+                        }
+                        updateCounterDisplay();
+                    } catch(e) { /* ignore update errors */ }
+                });
+            }
+        } catch(e) { console.warn('Failed to subscribe to timer updates', e); }
+
     // Ensure Start/Stop visibility matches current timerRunning state
     updateStartStopVisibility();
 
@@ -1009,6 +1027,8 @@
     let timerInterval = null;
     let timerRemaining = null; // seconds
     let timerRunning = false;
+    let mainTimerStart = null; // epoch ms from main process
+    let configuredSeconds = null; // current timelapse in seconds
 
     // Helper parse/format reused
     function parseTimeToSeconds(str) {
@@ -1048,69 +1068,64 @@
             initialSeconds = parseTimeToSeconds(tl);
         }
 
-        timerRemaining = initialSeconds;
-        // ensure we have the counter element reference
+        // Store configured seconds so renderer can compute remaining using main's start timestamp
+        configuredSeconds = initialSeconds;
+
+        // Tell main process to start the authoritative timer
+        try {
+            if (window.ipcRenderer) {
+                const res = await window.ipcRenderer.invoke('timer:start', { timeLapseSeconds: configuredSeconds }).catch(()=>null);
+                // main will broadcast state; but if it returned startedAt, set it now
+                if (res && res.startedAt) mainTimerStart = res.startedAt;
+            }
+        } catch (e) { console.warn('timer:start invoke failed', e); }
+
+        // local UI state
+        timerRemaining = configuredSeconds;
         if (!counterEl) counterEl = document.getElementById('counter');
         setTimerRunningState(true);
         updateCounterDisplay();
 
-        // tick every second
+        // keep a local ticking interval for smooth UI updates (value computed from mainTimerStart)
         if (timerInterval) clearInterval(timerInterval);
         timerInterval = setInterval(()=>{
-            timerRemaining -= 1;
-            updateCounterDisplay();
-            // when crossing zero (0 -> -1) play alert sounds sequentially and mark red
-                if (timerRemaining === -1) {
-                    // Play the 'alert' sound N times in sequence (no overlap)
-                    // Notify main process once when alarm sequence starts so app can restore/notify
-                    try { if (window.ipcRenderer && !window.__alarmTriggered) { window.__alarmTriggered = true; window.ipcRenderer.invoke('alarm:trigger').catch(()=>{}); } } catch(e){}
-                    (async function playAlertsSequentially(count){
-                        try {
-                            for (let i=0;i<count;i++){
-                                // create a fresh Audio instance so events are reliable
-                                const audio = window.playSound && window.playSound('alert');
-                                if (!audio) {
-                                    // if playSound didn't return an Audio, just wait a short delay
-                                    await new Promise(r => setTimeout(r, 600));
-                                    continue;
-                                }
-
-                                // Helper to await either 'ended' event or timeout (in case the event doesn't fire)
-                                await new Promise((resolve) => {
-                                    let settled = false;
-                                    const onEnded = () => { if (settled) return; settled = true; cleanup(); resolve(); };
-                                    const onError = () => { if (settled) return; settled = true; cleanup(); resolve(); };
-                                    const timeout = setTimeout(() => { if (settled) return; settled = true; cleanup(); resolve(); }, 4000);
-                                    function cleanup(){
-                                        clearTimeout(timeout);
-                                        try { audio.removeEventListener('ended', onEnded); audio.removeEventListener('error', onError); } catch(e){}
-                                    }
-                                    try {
-                                        audio.addEventListener('ended', onEnded);
-                                        audio.addEventListener('error', onError);
-                                    } catch(e){ /* if adding listeners fails, fallback to timeout */ }
-                                });
-                            }
-                        } catch(e){
-                            console.error('Failed during sequential alert playback', e);
-                        }
-                    })(4);
-
-                    if (counterEl) counterEl.style.color = 'red';
+            try {
+                if (mainTimerStart) {
+                    const elapsed = Math.floor((Date.now() - mainTimerStart)/1000);
+                    timerRemaining = configuredSeconds - elapsed;
+                } else if (typeof timerRemaining === 'number') {
+                    timerRemaining -= 1;
                 }
+                updateCounterDisplay();
+            } catch(e){}
         }, 1000);
     }
 
-    function stopTimer(){
+    async function stopTimer(){
+        // ask main to stop authoritative timer
+        try {
+            if (window.ipcRenderer) await window.ipcRenderer.invoke('timer:stop').catch(()=>null);
+        } catch(e){ console.warn('timer:stop invoke failed', e); }
+
         if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
         setTimerRunningState(false);
-        // save current remaining as signed HH:MM:SS string
+        // compute and save current remaining as signed HH:MM:SS string
         (async ()=>{
             try {
-                const stamp = formatSeconds(timerRemaining || 0);
-                await Storage.setTimeSlap(stamp);
+                let stampVal = null;
+                if (configuredSeconds !== null && mainTimerStart) {
+                    const elapsed = Math.floor((Date.now() - mainTimerStart)/1000);
+                    const rem = configuredSeconds - elapsed;
+                    stampVal = formatSeconds(rem || 0);
+                } else {
+                    stampVal = formatSeconds(timerRemaining || 0);
+                }
+                await Storage.setTimeSlap(stampVal);
             } catch(e){}
         })();
+        // clear local references
+        mainTimerStart = null;
+        configuredSeconds = null;
     }
 
     function updateCounterDisplay(){

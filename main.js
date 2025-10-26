@@ -14,6 +14,55 @@ let storage = { time_slaps: [], register: [] };
 // Tray instance (created when window ready)
 let tray = null;
 
+// TIMER (main process) - keep authoritative timer state here so counting continues
+// even if renderer is suspended, minimized or the screen is locked.
+const { powerSaveBlocker } = require('electron');
+let timerRunning = false;
+let timerStart = null; // epoch ms when started
+let timerIntervalId = null;
+let psbId = null; // powerSaveBlocker id when active
+
+function secondsRemainingFromConfig(timeLapseSeconds) {
+  if (!timerStart) return null;
+  const elapsed = Math.floor((Date.now() - timerStart) / 1000);
+  return Math.max(0, timeLapseSeconds - elapsed);
+}
+
+function broadcastTimerState() {
+  const wins = BrowserWindow.getAllWindows();
+  const payload = { running: timerRunning, startedAt: timerStart };
+  wins.forEach(w => {
+    try { w.webContents.send('timer:update_state', payload); } catch (e) { /* ignore */ }
+  });
+}
+
+function startMainTimer() {
+  if (timerRunning) return;
+  timerRunning = true;
+  timerStart = Date.now();
+  // Try to prevent app suspension while the timer runs so the main process keeps CPU time.
+  try {
+    if (!psbId) psbId = powerSaveBlocker.start('prevent-app-suspension');
+  } catch (e) { console.warn('powerSaveBlocker failed', e); }
+
+  // Broadcast immediately and then every second
+  broadcastTimerState();
+  timerIntervalId = setInterval(broadcastTimerState, 1000);
+}
+
+function stopMainTimer() {
+  if (!timerRunning) return;
+  timerRunning = false;
+  // clear interval
+  try { if (timerIntervalId) clearInterval(timerIntervalId); } catch (e) {}
+  timerIntervalId = null;
+  // release power save blocker
+  try { if (psbId && powerSaveBlocker.isStarted(psbId)) { powerSaveBlocker.stop(psbId); } } catch (e) {}
+  psbId = null;
+  // Broadcast final state
+  broadcastTimerState();
+}
+
 // Ensure Windows notifications and taskbar use a consistent AppID and app name
 try {
   if (process.platform === 'win32' && app && typeof app.setAppUserModelId === 'function') {
@@ -177,6 +226,24 @@ function processWeekly(){
 
 ipcMain.handle('storage:process_weekly', async ()=>{
   return processWeekly();
+});
+
+// Timer control from renderer: start/stop and get current state
+ipcMain.handle('timer:start', async (event, { timeLapseSeconds } = {}) => {
+  // timeLapseSeconds is optional; main only tracks start time. Renderer may compute remaining.
+  startMainTimer();
+  return { ok: true, startedAt: timerStart };
+});
+
+ipcMain.handle('timer:stop', async (event, { timeStamp } = {}) => {
+  // stop and return elapsed seconds if needed
+  const startedAt = timerStart;
+  stopMainTimer();
+  return { ok: true, startedAt };
+});
+
+ipcMain.handle('timer:get_state', async () => {
+  return { running: timerRunning, startedAt: timerStart };
 });
 
 // Return the register rows

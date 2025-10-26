@@ -34,8 +34,16 @@ try {
 }
 
 // Expose a minimal safe API to renderer
+// Expose a safe ipc API: invoke (request/response) and on/off for events from main
 contextBridge.exposeInMainWorld('ipcRenderer', {
-	invoke: (channel, ...args) => ipcRenderer.invoke(channel, ...args)
+	invoke: (channel, ...args) => ipcRenderer.invoke(channel, ...args),
+	on: (channel, listener) => {
+		const wrapped = (event, ...args) => listener(...args);
+		ipcRenderer.on(channel, wrapped);
+		// return unsubscribe function
+		return () => ipcRenderer.removeListener(channel, wrapped);
+	},
+	removeAllListeners: (channel) => ipcRenderer.removeAllListeners(channel)
 });
 
 // Also expose a small helper to tell the renderer that the bundled DB key exists
